@@ -11,6 +11,7 @@
 依赖：image 模块
 """
 
+import math
 
 # ============================================================
 # 光斑检测结果
@@ -37,8 +38,8 @@ class LaserSpot:
         self.confidence = 0.0
 
     def __repr__(self):
-        return (f"LaserSpot(found={self.found}, "
-                f"center=({self.cx:.1f},{self.cy:.1f}), r={self.radius:.1f})")
+        return "LaserSpot(found={}, center=({:.1f},{:.1f}), r={:.1f})".format(
+            self.found, self.cx, self.cy, self.radius)
 
 
 # ============================================================
@@ -237,6 +238,3 @@ class LaserDetector:
             # 未检测到：显示状态
             img.draw_string(10, 10, "Laser: NOT FOUND", color=color, scale=1)
 
-
-# 延迟导入（避免循环引用）
-import math

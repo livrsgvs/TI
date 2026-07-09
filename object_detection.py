@@ -11,6 +11,7 @@
 依赖：K230 nncase/KPU 推理框架，或 image.find_features (Haar Cascade)
 """
 
+import image
 
 # ============================================================
 # 检测框结构
@@ -34,8 +35,8 @@ class DetectionBox:
         self.centroid = (0, 0)
 
     def __repr__(self):
-        return (f"Detection(label='{self.label}', id={self.class_id}, "
-                f"conf={self.confidence:.2f}, rect={self.rect})")
+        return "Detection(label='{}', id={}, conf={:.2f}, rect={})".format(
+            self.label, self.class_id, self.confidence, self.rect)
 
     @staticmethod
     def from_yolo_result(obj, labels: list) -> 'DetectionBox':
@@ -228,13 +229,13 @@ class ObjectDetector:
         """按类别标签过滤"""
         return [b for b in boxes if b.label in labels]
 
-    def get_largest(self, boxes: list) -> DetectionBox | None:
+    def get_largest(self, boxes: list):
         """返回面积最大的检测框"""
         if not boxes:
             return None
         return max(boxes, key=lambda b: b.rect[2] * b.rect[3])
 
-    def get_centermost(self, boxes: list, img_w: int, img_h: int) -> DetectionBox | None:
+    def get_centermost(self, boxes: list, img_w: int, img_h: int):
         """返回最靠近图像中心的检测框"""
         if not boxes:
             return None

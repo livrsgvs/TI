@@ -48,8 +48,8 @@ class TrackResult:
         self.velocity = (0.0, 0.0)
 
     def __repr__(self):
-        return (f"Track(state={self.state}, rect={self.rect}, "
-                f"conf={self.confidence:.2f})")
+        return "Track(state={}, rect={}, conf={:.2f})".format(
+            self.state, self.rect, self.confidence)
 
 
 # ============================================================
@@ -281,13 +281,12 @@ class Tracker:
         cx, cy = result.centroid
         img.draw_cross(cx, cy, color=color, size=10, thickness=2)
 
-        # 速度箭头
+        # 速度方向线
         vx, vy = result.velocity
         if vx != 0 or vy != 0:
-            arrow_len = max(5, min(50, int((vx**2 + vy**2) ** 0.5 * 5)))
             ex = cx + int(vx * 5)
             ey = cy + int(vy * 5)
-            img.draw_arrow(cx, cy, ex, ey, color=(0, 255, 255), thickness=2)
+            img.draw_line(cx, cy, ex, ey, color=(0, 255, 255), thickness=2)
 
         # 状态文字
         state_str = f"{result.state} F{result.frame_id}"

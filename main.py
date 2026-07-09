@@ -22,6 +22,7 @@ import time
 import gc
 import math
 from machine import UART, PWM, Pin
+from media.display import *   # 显示输出（IDE预览）
 
 # ---- 导入各功能模块 ----
 from uart_com        import UARTManager, DataPacket
@@ -55,27 +56,29 @@ class Config:
     CAM_PIXFMT = "RGB565"  # "RGB565" / "GRAYSCALE"
 
     # ---- 串口 ----
-    UART_ID     = 1
+    UART_ID     = 2          # UART2
     UART_BAUD   = 115200
+    UART_TX_PIN = 5          # UART2_TXD = IO5 (物理Pin17)
+    UART_RX_PIN = 6          # UART2_RXD = IO6 (物理Pin20)
 
     # ---- 功能开关（按需开启/关闭以节省算力） ----
-    ENABLE_COLOR_DETECTION  = True
-    ENABLE_SHAPE_DETECTION  = False
-    ENABLE_BARCODE          = False
-    ENABLE_QRCODE           = False
-    ENABLE_OCR              = False
-    ENABLE_OBJECT_DETECTION = False
-    ENABLE_TRACKING         = False
-    ENABLE_LINE_FOLLOW      = False
-    ENABLE_LASER_DETECTION  = False
+    ENABLE_COLOR_DETECTION  = True #颜色识别
+    ENABLE_SHAPE_DETECTION  = False#形状识别
+    ENABLE_BARCODE          = False#条码识别
+    ENABLE_QRCODE           = False#二维码识别
+    ENABLE_OCR              = False#光学字符识别
+    ENABLE_OBJECT_DETECTION = False#目标检测
+    ENABLE_TRACKING         = False#目标跟踪
+    ENABLE_LINE_FOLLOW      = False#循线行驶
+    ENABLE_LASER_DETECTION  = False#激光检测
 
     # ---- 调试 ----
     DEBUG_MODE = True           # 开启后在图像上绘制中间结果
     FPS_INTERVAL = 1.0          # FPS 打印间隔（秒）
 
-    # ---- 电机 / 舵机 ----
-    MOTOR_COUNT = 4
-    SERVO_COUNT = 2
+    # ---- 电机 / 舵机 ----#接了几个对应的设备
+    MOTOR_COUNT = 0
+    SERVO_COUNT = 0
 
     # ---- 默认检测目标 ----
     DEFAULT_COLOR_TARGET = "red"
@@ -94,7 +97,16 @@ def init_all():
     print("  Version 1.0")
     print("=" * 40)
 
-    # 1. 摄像头
+    # 1. 显示器（必须在 sensor.run() 之前初始化！）
+    if Config.DEBUG_MODE:
+        try:
+            Display.init(Display.VIRT, width=Config.CAM_WIDTH,
+                         height=Config.CAM_HEIGHT, fps=Config.CAM_FPS, to_ide=True)
+            print("[Init] 显示器初始化成功 (IDE预览)")
+        except Exception as e:
+            print(f"[Init] 显示器初始化失败: {e}")
+
+    # 2. 摄像头
     print("\n[Init] 初始化摄像头...")
     cam = Camera()
     if not cam.init(width=Config.CAM_WIDTH,
@@ -103,14 +115,14 @@ def init_all():
         print("[错误] 摄像头初始化失败，请检查连接！")
         raise RuntimeError("Camera init failed")
 
-    # 2. 串口
+    # 3. 串口
     print("[Init] 初始化串口...")
-    uart = UARTManager(uart_id=Config.UART_ID, baudrate=Config.UART_BAUD)
+    uart = UARTManager(uart_id=Config.UART_ID, baudrate=Config.UART_BAUD,
+                       tx_pin=Config.UART_TX_PIN, rx_pin=Config.UART_RX_PIN)
     if not uart.init():
         print("[警告] 串口初始化失败，将跳过串口通信")
-        # 不 raise，允许纯视觉调试
 
-    # 3. 视觉检测器（按需初始化）
+    # 4. 视觉检测器（按需初始化）
     detectors = {}
 
     if Config.ENABLE_COLOR_DETECTION:
@@ -126,7 +138,7 @@ def init_all():
         detectors['qrcode'] = QRCodeDetector(debug=Config.DEBUG_MODE)
 
     if Config.ENABLE_OCR:
-        detectors['ocr'] = OCR(mode="template")  # 或 mode="cnn"
+        detectors['ocr'] = OCR(mode="template")
 
     if Config.ENABLE_OBJECT_DETECTION:
         detectors['object'] = ObjectDetector(mode="yolo", debug=Config.DEBUG_MODE)
@@ -142,9 +154,8 @@ def init_all():
 
     # 坐标映射器（独立初始化，需预先标定）
     mapper = CoordinateMapper(mode="linear")
-    # mapper.load_calibration("/sd/calib.json")  # 若有保存的标定文件
 
-    # 4. 执行器
+    # 5. 执行器
     actuators = {}
     if Config.MOTOR_COUNT > 0:
         motors = MotorController(num_motors=Config.MOTOR_COUNT)
@@ -308,6 +319,8 @@ def main():
     """
     cam = None
     uart = None
+    actuators = {}
+    detectors = {}
 
     try:
         # ---- 初始化 ----
@@ -337,6 +350,13 @@ def main():
 
             # 2. 执行视觉处理
             packet = process_vision(img, detectors, mapper)
+
+            # 2.5 IDE显示预览
+            if Config.DEBUG_MODE:
+                try:
+                    Display.show_image(img)
+                except Exception:
+                    pass
 
             # 3. 接收下位机指令
             if uart is not None:
@@ -394,6 +414,11 @@ def main():
         if 'servos' in actuators:
             actuators['servos'].release_all()
             actuators['servos'].deinit_all()
+
+        try:
+            Display.deinit()
+        except Exception:
+            pass
 
         print("[Main] 系统已安全关闭")
 

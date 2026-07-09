@@ -15,6 +15,13 @@ from machine import UART
 import struct
 import time
 
+# K230 默认 UART 引脚映射
+UART_PIN_MAP = {
+    1: {'tx': 3,  'rx': 4},
+    2: {'tx': 5,  'rx': 6},    # UART2: IO5/IO6
+    3: {'tx': 33, 'rx': 34},
+}
+
 
 # ============================================================
 # 数据包结构体定义
@@ -92,8 +99,8 @@ class DataPacket:
         return c & 0xFF
 
     def __repr__(self):
-        return (f"DataPacket(x={self.target_x}, y={self.target_y}, "
-                f"type={self.target_type}, cmd={self.command}, flags={self.flags:08b})")
+        return "DataPacket(x={}, y={}, type={}, cmd={}, flags={:08b})".format(
+            self.target_x, self.target_y, self.target_type, self.command, self.flags)
 
 
 # ============================================================
@@ -105,7 +112,7 @@ class UARTManager:
     封装 UART 初始化、发送、接收及回调机制。
 
     :使用示例:
-        uart = UARTManager(uart_id=1, baudrate=115200)
+        uart = UARTManager(uart_id=1, baudrate=115200, tx_pin=3, rx_pin=4)
         uart.init()
         pkt = DataPacket(); pkt.command = 1
         uart.send(pkt)
@@ -119,8 +126,8 @@ class UARTManager:
             bits        - 数据位（默认 8）
             parity      - 校验位（默认 None）
             stop        - 停止位（默认 1）
-            tx_pin      - 发送引脚
-            rx_pin      - 接收引脚
+            tx_pin      - 发送引脚号（默认查 UART_PIN_MAP）
+            rx_pin      - 接收引脚号（默认查 UART_PIN_MAP）
         """
         self.uart_id = uart_id
         self.baudrate = kwargs.get('baudrate', 115200)
@@ -129,26 +136,25 @@ class UARTManager:
         self.stop = kwargs.get('stop', 1)
         self.timeout = kwargs.get('timeout', 10)
         self.rx_buf_size = kwargs.get('rx_buf_size', 256)
-        self.tx_pin = kwargs.get('tx_pin', None)
-        self.rx_pin = kwargs.get('rx_pin', None)
+
+        # 引脚配置（优先用传入的，否则查 UART_PIN_MAP）
+        pin_defaults = UART_PIN_MAP.get(uart_id, {'tx': 3, 'rx': 4})
+        self.tx_pin = kwargs.get('tx_pin', pin_defaults['tx'])
+        self.rx_pin = kwargs.get('rx_pin', pin_defaults['rx'])
+
         self._uart = None
         self._rx_callback = None
 
     def init(self) -> bool:
         """初始化 UART 硬件，成功返回 True"""
         try:
-            self._uart = UART(self.uart_id,
-                              baudrate=self.baudrate,
-                              bits=self.bits,
-                              parity=self.parity,
-                              stop=self.stop,
-                              tx=self.tx_pin, rx=self.rx_pin,
-                              timeout=self.timeout,
-                              read_buf_len=self.rx_buf_size)
-            print(f"[UART] UART{self.uart_id} 初始化成功 @{self.baudrate}")
+            self._uart = UART(self.uart_id, self.baudrate,
+                              tx=self.tx_pin, rx=self.rx_pin)
+            print("[UART] UART{} 初始化成功 @{}bps (TX:{}, RX:{})".format(
+                self.uart_id, self.baudrate, self.tx_pin, self.rx_pin))
             return True
         except Exception as e:
-            print(f"[UART] 初始化失败: {e}")
+            print("[UART] 初始化失败: {}".format(e))
             return False
 
     def deinit(self):

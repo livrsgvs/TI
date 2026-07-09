@@ -56,8 +56,8 @@ class ShapeResult:
         self.confidence = 0.0
 
     def __repr__(self):
-        return (f"Shape({self.shape_type}, area={self.area}, "
-                f"roundness={self.roundness:.3f}, conf={self.confidence:.2f})")
+        return "Shape({}, area={}, roundness={:.3f}, conf={:.2f})".format(
+            self.shape_type, self.area, self.roundness, self.confidence)
 
 
 # ============================================================

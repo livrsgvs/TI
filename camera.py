@@ -5,12 +5,12 @@
 
 作者：E-Competition Team
 日期：2026-07-09
-版本：v1.0
+版本：v2.0 — 适配 CanMV K230 v3p0 (media.sensor API)
 
-依赖：CanMV K230 的 sensor 与 image 模块
+依赖：media.sensor、image 模块
 """
 
-import sensor
+from media.sensor import *
 import image
 import time
 
@@ -21,7 +21,7 @@ import time
 DEFAULT_WIDTH   = 320     # 默认分辨率宽
 DEFAULT_HEIGHT  = 240     # 默认分辨率高
 DEFAULT_FPS     = 60      # 默认帧率
-DEFAULT_PIXFMT  = sensor.RGB565  # 默认像素格式
+DEFAULT_PIXFMT  = Sensor.RGB565  # 默认像素格式
 
 
 # ============================================================
@@ -50,6 +50,7 @@ class Camera:
         self._roi = None            # (x, y, w, h)
         self._flip = False
         self._mirror = False
+        self._sensor = None         # Sensor 实例
 
     # ---- 初始化 / 反初始化 ----
 
@@ -63,16 +64,20 @@ class Camera:
         :param width:     图像宽度
         :param height:    图像高度
         :param framerate: 帧率
-        :param pixformat: 像素格式（sensor.RGB565 / sensor.GRAYSCALE 等）
+        :param pixformat: 像素格式（Sensor.RGB565 / Sensor.GRAYSCALE 等）
         :return: 是否成功
         """
         try:
-            sensor.reset()
-            sensor.set_pixformat(pixformat)
-            sensor.set_framesize(self._resolve_framesize(width, height))
-            sensor.set_windowing((0, 0, width, height))
-            sensor.set_framerate(framerate)
-            sensor.skip_frames(time=200)  # 跳过不稳定帧
+            # 创建 Sensor 实例
+            self._sensor = Sensor(width=width, height=height)
+            # 复位传感器
+            self._sensor.reset()
+            # 设置输出分辨率
+            self._sensor.set_framesize(width=width, height=height)
+            # 设置像素格式
+            self._sensor.set_pixformat(pixformat)
+            # 启动传感器
+            self._sensor.run()
 
             self._width = width
             self._height = height
@@ -88,10 +93,12 @@ class Camera:
     def deinit(self):
         """关闭摄像头"""
         try:
-            sensor.shutdown()
+            if self._sensor is not None:
+                self._sensor.stop()
         except Exception:
             pass
         self._initialized = False
+        self._sensor = None
         print("[Camera] 已关闭")
 
     # ---- 帧获取 ----
@@ -102,10 +109,10 @@ class Camera:
         :param copy_to_fb: 是否拷贝到帧缓冲（通常 True）
         :return: image 对象，失败返回 None
         """
-        if not self._initialized:
+        if not self._initialized or self._sensor is None:
             return None
         try:
-            img = sensor.snapshot()
+            img = self._sensor.snapshot()
             return img
         except Exception as e:
             print(f"[Camera] 获取帧失败: {e}")
@@ -132,6 +139,7 @@ class Camera:
         self._roi = None
 
     # ---- 曝光 / 白平衡 ----
+    # 注：以下方法依赖 Sensor 底层 API，若固件不支持请使用 kd_mpi_sensor_* 系列函数
 
     def set_auto_exposure(self, enable: bool, exposure_us: int = 0):
         """
@@ -139,7 +147,10 @@ class Camera:
         :param enable:      是否开启
         :param exposure_us: 手动曝光值（微秒），仅 enable=False 时有效
         """
-        sensor.set_auto_exposure(enable, exposure_us=exposure_us)
+        try:
+            self._sensor.set_auto_exposure(enable, exposure_us=exposure_us)
+        except AttributeError:
+            pass  # 固件不支持则忽略
 
     def set_auto_whitebal(self, enable: bool,
                           r_gain: float = 1.0,
@@ -147,34 +158,50 @@ class Camera:
                           b_gain: float = 1.0):
         """
         设置自动白平衡
-        :param enable: 是否开启
-        :param r_gain / g_gain / b_gain: 手动增益
         """
-        sensor.set_auto_whitebal(enable, r_gain=r_gain, g_gain=g_gain, b_gain=b_gain)
+        try:
+            self._sensor.set_auto_whitebal(enable, r_gain=r_gain, g_gain=g_gain, b_gain=b_gain)
+        except AttributeError:
+            pass
 
     def set_brightness(self, value: int):
-        """设置亮度 (-3 ~ +3)"""
-        sensor.set_brightness(value)
+        """设置亮度"""
+        try:
+            self._sensor.set_brightness(value)
+        except AttributeError:
+            pass
 
     def set_contrast(self, value: int):
-        """设置对比度 (-3 ~ +3)"""
-        sensor.set_contrast(value)
+        """设置对比度"""
+        try:
+            self._sensor.set_contrast(value)
+        except AttributeError:
+            pass
 
     def set_saturation(self, value: int):
-        """设置饱和度 (-3 ~ +3)"""
-        sensor.set_saturation(value)
+        """设置饱和度"""
+        try:
+            self._sensor.set_saturation(value)
+        except AttributeError:
+            pass
 
     # ---- 镜像 / 翻转 ----
 
     def set_vflip(self, enable: bool):
         """垂直翻转"""
-        sensor.set_vflip(enable)
-        self._flip = enable
+        try:
+            self._sensor.set_vflip(enable)
+            self._flip = enable
+        except AttributeError:
+            pass
 
     def set_hmirror(self, enable: bool):
         """水平镜像"""
-        sensor.set_hmirror(enable)
-        self._mirror = enable
+        try:
+            self._sensor.set_hmirror(enable)
+            self._mirror = enable
+        except AttributeError:
+            pass
 
     # ---- 属性 ----
 
@@ -193,23 +220,3 @@ class Camera:
     @property
     def is_initialized(self) -> bool:
         return self._initialized
-
-    # ---- 内部工具 ----
-
-    @staticmethod
-    def _resolve_framesize(w: int, h: int):
-        """
-        根据分辨率选择最接近的 sensor 帧尺寸常量
-        """
-        if w <= 320 and h <= 240:
-            return sensor.QVGA
-        elif w <= 640 and h <= 480:
-            return sensor.VGA
-        elif w <= 800 and h <= 600:
-            return sensor.SVGA
-        elif w <= 1280 and h <= 720:
-            return sensor.HD
-        elif w <= 1920 and h <= 1080:
-            return sensor.FHD
-        else:
-            return sensor.QVGA  # 默认

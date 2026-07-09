@@ -40,8 +40,8 @@ class LineResult:
         self.confidence = 0.0
 
     def __repr__(self):
-        return (f"Line(found={self.found}, angle={self.angle:.1f}°, "
-                f"offset={self.offset:.1f}px, type={self.line_type})")
+        return "Line(found={}, angle={:.1f}deg, offset={:.1f}px, type={})".format(
+            self.found, self.angle, self.offset, self.line_type)
 
 
 # ============================================================
@@ -159,7 +159,7 @@ class LineFollower:
 
         return result
 
-    def _detect_by_segments(self, img_bin, roi: tuple, w: int, h: int) -> LineResult | None:
+    def _detect_by_segments(self, img_bin, roi: tuple, w: int, h: int):
         """
         备用检测：通过 find_line_segments 组装赛道线
         """

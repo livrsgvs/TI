@@ -55,8 +55,8 @@ class ColorBlob:
         self.code = code
 
     def __repr__(self):
-        return (f"Blob(x={self.x}, y={self.y}, w={self.w}, h={self.h}, "
-                f"area={self.area}, cx={self.cx}, cy={self.cy})")
+        return "Blob(x={}, y={}, w={}, h={}, area={}, cx={}, cy={})".format(
+            self.x, self.y, self.w, self.h, self.area, self.cx, self.cy)
 
     @staticmethod
     def from_image_blob(blob) -> 'ColorBlob':
@@ -147,14 +147,16 @@ class ColorDetector:
             return []
 
         try:
+            # 构建 find_blobs 参数（v3p0 API 不支持 stride/invert）
+            kwargs = {}
+            if roi is not None:
+                kwargs['roi'] = roi
             raw_blobs = img.find_blobs(th,
-                                       roi=roi,
-                                       x_stride=1, y_stride=1,
                                        pixels_threshold=self._pixels_threshold,
                                        area_threshold=self._area_threshold,
                                        merge=self._merge,
                                        margin=self._margin,
-                                       invert=invert)
+                                       **kwargs)
 
             # 转换为统一结构并按面积排序
             blobs = [ColorBlob.from_image_blob(b) for b in raw_blobs]

@@ -98,7 +98,7 @@ class QRCodeDetector:
             print(f"[QRCode] 识别异常: {e}")
         return results
 
-    def detect_first(self, img, roi: tuple = None) -> QRCodeResult | None:
+    def detect_first(self, img, roi: tuple = None):
         """
         只返回第一个识别到的二维码
         :return: QRCodeResult 或 None

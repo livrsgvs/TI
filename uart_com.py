@@ -13,6 +13,7 @@
 
 from machine import UART
 import struct
+import debug_config
 import time
 
 # K230 默认 UART 引脚映射
@@ -30,12 +31,19 @@ class DataPacket:
     """
     串口通信数据包结构体
 
-    数据包格式（可按需扩展）：
+    数据包格式：
     +--------+----------+----------+-----------+---------+-------+----------+
     | HEADER | target_x | target_y | target_type | command | flags | checksum |
     +--------+----------+----------+-----------+---------+-------+----------+
     | 2B     | 2B       | 2B       | 1B        | 1B      | 1B    | 1B       |
     +--------+----------+----------+-----------+---------+-------+----------+
+
+    命令码（K230↔MCU）：
+        0x00 = 停车        0x01 = 前进
+        0x02 = 后退        0x03 = 左转
+        0x04 = 右转        0x05 = PID转向（target_x=转向量, target_y=速度）
+        0x06 = 激光舵机    （target_x=pan, target_y=tilt）
+        0xFF = 急停
 
     默认包大小：9 字节
     """
@@ -150,8 +158,9 @@ class UARTManager:
         try:
             self._uart = UART(self.uart_id, self.baudrate,
                               tx=self.tx_pin, rx=self.rx_pin)
-            print("[UART] UART{} 初始化成功 @{}bps (TX:{}, RX:{})".format(
-                self.uart_id, self.baudrate, self.tx_pin, self.rx_pin))
+            if debug_config.DEBUG:
+                print("[UART] UART{} 初始化成功 @{}bps (TX:{}, RX:{})".format(
+                    self.uart_id, self.baudrate, self.tx_pin, self.rx_pin))
             return True
         except Exception as e:
             print("[UART] 初始化失败: {}".format(e))

@@ -222,11 +222,11 @@ class ShapeDetector:
         """
         color_map = {
             ShapeType.CIRCLE:    (0, 255, 0),
-            ShapeType.RECTANGLE: (255, 0, 0),
-            ShapeType.SQUARE:    (255, 255, 0),
-            ShapeType.TRIANGLE:  (0, 0, 255),
-            ShapeType.POLYGON:   (255, 0, 255),
-            ShapeType.UNKNOWN:   (128, 128, 128),
+            ShapeType.RECTANGLE: (0, 255, 0),
+            ShapeType.SQUARE:    (0, 255, 0),
+            ShapeType.TRIANGLE:  (0, 255, 0),
+            ShapeType.POLYGON:   (0, 255, 0),
+            ShapeType.UNKNOWN:   (0, 255, 0),
         }
 
         for s in shapes:

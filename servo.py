@@ -8,7 +8,7 @@
 日期：2026-07-09
 版本：v2.0 — 适配 K230 FPIOA + PWM API
 
-依赖：machine.PWM, machine.FPIOA
+依赖：machine.PWM
 """
 
 from machine import PWM
@@ -17,19 +17,16 @@ import time
 
 # ============================================================
 # 默认引脚配置 — 按你的实际接线修改！
-# 引脚号 = 物理Pin编号（1~40）
+# 引脚号 = IO 编号
 # ============================================================
 DEFAULT_SERVO_PINS = {
-    1: 20,   # 舵机1 → IO20 (物理Pin5)
-    2: 27,   # 舵机2 → IO27 (物理Pin15)
-    3: 30,   # 舵机3 → IO30 (物理Pin21)
-    4: 28,   # 舵机4 → IO28 (物理Pin22)
-    5: 31,   # 舵机5 → IO31 (物理Pin23)
-    6: 29,   # 舵机6 → IO29 (物理Pin24)
+    1: 20,   # 舵机1 → IO20
+    2: 27,   # 舵机2 → IO27
+    3: 30,   # 舵机3 → IO30
+    4: 28,   # 舵机4 → IO28
+    5: 31,   # 舵机5 → IO31
+    6: 29,   # 舵机6 → IO29
 }
-
-# PWM 通道（用 4~9 避免和电机的 0~3 冲突）
-PWM_CHANNELS = [4, 5, 6, 7, 8, 9]
 
 
 # ============================================================
@@ -54,14 +51,12 @@ class Servo:
                  angle_min: int = 0, angle_max: int = 180):
         """
         :param channel:   舵机编号
-        :param pin:       物理引脚号（1~40）
+        :param pin:       IO 编号
         :param angle_min: 最小角度（默认 0°）
         :param angle_max: 最大角度（默认 180°）
         """
         self.channel = channel
-        self.pin_num = pin if pin is not None else DEFAULT_SERVO_PINS.get(channel, 5)
-        idx = min(channel - 1, len(PWM_CHANNELS) - 1)
-        self.pwm_ch = PWM_CHANNELS[idx]
+        self.pin_num = pin if pin is not None else DEFAULT_SERVO_PINS.get(channel, 20)
         self.angle_min = angle_min
         self.angle_max = angle_max
 
@@ -72,12 +67,12 @@ class Servo:
     def init(self, start_angle: float = 90.0) -> bool:
         """初始化 PWM，成功返回 True"""
         try:
-            self._pwm = PWM(self.pwm_ch, self.FREQ, duty=0,
-                            pin=self.pin_num)
+            # K230 v3p0: PWM(pin, freq, duty)
+            self._pwm = PWM(self.pin_num, self.FREQ, duty=0)
             self._initialized = True
             self.set_angle(start_angle)
-            print("[Servo] 舵机{} 初始化成功 (Pin{}→PWM{})".format(
-                self.channel, self.pin_num, self.pwm_ch))
+            print("[Servo] 舵机{} 初始化成功 (IO{})".format(
+                self.channel, self.pin_num))
             return True
         except Exception as e:
             print("[Servo] 舵机{} 初始化失败: {}".format(self.channel, e))

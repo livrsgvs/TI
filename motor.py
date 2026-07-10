@@ -8,7 +8,7 @@
 日期：2026-07-09
 版本：v2.0 — 适配 K230 FPIOA + PWM API
 
-依赖：machine.PWM, machine.FPIOA
+依赖：machine.PWM
 """
 
 from machine import PWM
@@ -17,17 +17,14 @@ import time
 
 # ============================================================
 # 默认引脚配置 — 按你的实际接线修改！
-# 引脚号 = 物理Pin编号（1~40）
+# 引脚号 = IO 编号
 # ============================================================
 DEFAULT_MOTOR_PINS = {
-    1: 42,   # 电机1 → IO42 (物理Pin9)
-    2: 52,   # 电机2 → IO52 (物理Pin29)
-    3: 53,   # 电机3 → IO53 (物理Pin30)
-    4: 43,   # 电机4 → IO43 (物理Pin35)
+    1: 42,   # 电机1 → IO42
+    2: 52,   # 电机2 → IO52
+    3: 53,   # 电机3 → IO53
+    4: 43,   # 电机4 → IO43
 }
-
-# PWM 通道分配（每路电机独占一个 PWM 通道）
-PWM_CHANNELS = [0, 1, 2, 3]
 
 
 # ============================================================
@@ -56,11 +53,10 @@ class Motor:
     def __init__(self, channel: int, pin: int = None):
         """
         :param channel: 电机编号（1~4）
-        :param pin:     物理引脚号（1~40）
+        :param pin:     IO 编号
         """
         self.channel = channel
-        self.pin_num = pin if pin is not None else DEFAULT_MOTOR_PINS.get(channel, 9)
-        self.pwm_ch = PWM_CHANNELS[channel - 1] if channel <= len(PWM_CHANNELS) else 0
+        self.pin_num = pin if pin is not None else DEFAULT_MOTOR_PINS.get(channel, 42)
         self._pwm = None
         self._current_throttle = 0
         self._armed = False
@@ -69,12 +65,12 @@ class Motor:
     def init(self) -> bool:
         """初始化 PWM，成功返回 True"""
         try:
-            self._pwm = PWM(self.pwm_ch, self.FREQ, duty=0,
-                            pin=self.pin_num)
+            # K230 v3p0: PWM(pin, freq, duty)
+            self._pwm = PWM(self.pin_num, self.FREQ, duty=0)
             self._current_throttle = 0
             self._initialized = True
-            print("[Motor] 电机{} 初始化成功 (Pin{}→PWM{})".format(
-                self.channel, self.pin_num, self.pwm_ch))
+            print("[Motor] 电机{} 初始化成功 (IO{})".format(
+                self.channel, self.pin_num))
             return True
         except Exception as e:
             print("[Motor] 电机{} 初始化失败: {}".format(self.channel, e))

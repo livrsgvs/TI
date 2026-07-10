@@ -91,10 +91,10 @@ class TemplateMatcher:
 
         for ch, tmpl in templates.items():
             try:
-                score = img.find_template(tmpl,
-                                          threshold=0.5,
-                                          step=2,
-                                          search=image.SEARCH_EX)
+                # K230 v3p0: find_template(template, threshold) 仅2个参数
+                # 模板必须为灰度图
+                tmpl_gray = tmpl.copy().to_grayscale()
+                score = img.find_template(tmpl_gray, 0.5)
                 # find_template 返回 (x, y, score) 或 None
                 if score and score[2] > best_score:
                     best_score = score[2]

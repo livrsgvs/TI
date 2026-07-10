@@ -13,6 +13,7 @@
 from media.sensor import *
 import image
 import time
+import debug_config
 
 
 # ============================================================
@@ -72,8 +73,11 @@ class Camera:
             self._sensor = Sensor(width=width, height=height)
             # 复位传感器
             self._sensor.reset()
-            # 设置输出分辨率
-            self._sensor.set_framesize(width=width, height=height)
+            # 设置输出分辨率 — 320x240 用 Sensor.QVGA 常量更安全
+            if width == 320 and height == 240:
+                self._sensor.set_framesize(Sensor.QVGA)
+            else:
+                self._sensor.set_framesize(width=width, height=height)
             # 设置像素格式
             self._sensor.set_pixformat(pixformat)
             # 启动传感器
@@ -84,7 +88,8 @@ class Camera:
             self._framerate = framerate
             self._pixformat = pixformat
             self._initialized = True
-            print(f"[Camera] 初始化成功 {width}x{height} @{framerate}fps")
+            if debug_config.DEBUG:
+                print(f"[Camera] 初始化成功 {width}x{height} @{framerate}fps")
             return True
         except Exception as e:
             print(f"[Camera] 初始化失败: {e}")
@@ -99,7 +104,8 @@ class Camera:
             pass
         self._initialized = False
         self._sensor = None
-        print("[Camera] 已关闭")
+        if debug_config.DEBUG:
+            print("[Camera] 已关闭")
 
     # ---- 帧获取 ----
 

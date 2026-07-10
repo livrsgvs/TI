@@ -107,7 +107,7 @@ class BarcodeDetector:
     # ---- 可视化 ----
 
     def draw_results(self, img, results: list,
-                     color: tuple = (255, 0, 0), draw_payload: bool = True):
+                     color: tuple = (0, 255, 0), draw_payload: bool = True):
         """
         在图像上绘制条形码检测结果
         :param img:          图像对象

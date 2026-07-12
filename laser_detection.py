@@ -63,31 +63,38 @@ class LaserDetector:
     STRATEGY_BRIGHTNESS = "brightness"
     STRATEGY_COLOR      = "color"
 
-    # 红色激光笔 LAB 阈值参考
-    RED_LASER_THRESHOLD = [(90, 100, 40, 127, 30, 127)]
-    # 亮度阈值（灰度值 0~255）
-    BRIGHTNESS_THRESHOLD = 220
-    # 最小面积
-    MIN_AREA = 5
-    # 最大面积（防止户外光线误检）
+    # 红色激光笔 LAB 阈值（L=亮度, A=红绿, B=蓝黄）
+    #   L: 50~100  — 中等亮度到高亮（激光光线强，各种表面都显亮）
+    #   A: 50~127  — 红色通道（正=红）
+    #   B: -30~80  — 蓝黄通道（较宽，适应不同色温环境光）
+    RED_LASER_THRESHOLD = [(60, 70, 15, 60, 12, 28)]
+    # 亮度双阈值（灰度值 0~255），用于 brightness 策略
+    # 像素值在 [LOW, HIGH] 之间视为"高亮光斑"
+    BRIGHTNESS_THRESHOLD_LOW = 150    # 灰度下限
+    BRIGHTNESS_THRESHOLD_HIGH = 255   # 灰度上限
+    # 最小面积（像素）
+    MIN_AREA = 3
+    # 最大面积（防止户外大块亮区误检）
     MAX_AREA = 500
 
-    def __init__(self, strategy: str = "brightness", debug: bool = False):
+    def __init__(self, strategy: str = "color", debug: bool = False):
         """
         :param strategy: 检测策略 "brightness" / "color"
         :param debug:    是否调试
         """
         self.strategy = strategy
         self.debug = debug
-        self._brightness_thr = self.BRIGHTNESS_THRESHOLD
+        self._brightness_low = self.BRIGHTNESS_THRESHOLD_LOW
+        self._brightness_high = self.BRIGHTNESS_THRESHOLD_HIGH
         self._min_area = self.MIN_AREA
         self._max_area = self.MAX_AREA
 
     # ---- 参数设置 ----
 
-    def set_brightness_threshold(self, thr: int):
-        """设置亮度阈值（0~255）"""
-        self._brightness_thr = thr
+    def set_brightness_threshold(self, low: int, high: int = 255):
+        """设置亮度双阈值（灰度下限, 灰度上限）"""
+        self._brightness_low = low
+        self._brightness_high = high
 
     def set_area_range(self, min_a: int, max_a: int):
         """设置光斑面积范围"""
@@ -119,13 +126,21 @@ class LaserDetector:
         spot = LaserSpot()
         try:
             # 灰度 + 二值化
+            if img is None:
+                return spot
             img_gray = img.copy().to_grayscale()
-            img_bin = img_gray.binary([(self._brightness_thr, 255)], invert=False)
+            img_bin = img_gray.binary(
+                [(self._brightness_low, self._brightness_high)], invert=False)
 
-            # 查找高亮区域
-            blobs = img_bin.find_blobs([(255, 255)], roi=roi,
-                                       pixels_threshold=self._min_area,
-                                       merge=True)
+            # 查找高亮区域（roi=None 时不传 roi 参数，MicroPython 会崩）
+            if roi is not None:
+                blobs = img_bin.find_blobs([(255, 255)], roi=roi,
+                                           pixels_threshold=self._min_area,
+                                           merge=True)
+            else:
+                blobs = img_bin.find_blobs([(255, 255)],
+                                           pixels_threshold=self._min_area,
+                                           merge=True)
 
             if not blobs:
                 return spot
@@ -142,13 +157,20 @@ class LaserDetector:
             spot.area = blob.area()
             spot.radius = math.sqrt(blob.area() / math.pi) if blob.area() > 0 else 0
 
-            # 原图中该区域的最大亮度
-            stats = img.get_statistics(roi=(blob.x(), blob.y(), blob.w(), blob.h()))
-            spot.brightness = stats.l_max()
+            # 原图中该区域的最大亮度（blob 坐标先转 int 防 MicroPython 类型错误）
+            bx, by, bw, bh = int(blob.x()), int(blob.y()), int(blob.w()), int(blob.h())
+            if bw > 0 and bh > 0:
+                try:
+                    stats = img.get_statistics(roi=(bx, by, bw, bh))
+                    if stats is not None:
+                        spot.brightness = stats.l_max()
+                except Exception:
+                    pass  # get_statistics 不可用时跳过
 
             # 置信度：面积适中 + 亮度高 → 置信度高
             area_score = min(1.0, blob.area() / 50.0)  # 面积 50+ = 满分
-            bright_score = min(1.0, (spot.brightness - self._brightness_thr) / (255 - self._brightness_thr))
+            bright_score = min(1.0, (spot.brightness - self._brightness_low) /
+                              max(1, self._brightness_high - self._brightness_low))
             spot.confidence = (area_score + bright_score) / 2.0
 
         except Exception as e:
@@ -164,9 +186,17 @@ class LaserDetector:
         """
         spot = LaserSpot()
         try:
-            blobs = img.find_blobs(self.RED_LASER_THRESHOLD, roi=roi,
-                                   pixels_threshold=self._min_area,
-                                   merge=True)
+            if img is None:
+                return spot
+            # roi=None 时不传 roi 参数，MicroPython 会崩
+            if roi is not None:
+                blobs = img.find_blobs(self.RED_LASER_THRESHOLD, roi=roi,
+                                       pixels_threshold=self._min_area,
+                                       merge=True)
+            else:
+                blobs = img.find_blobs(self.RED_LASER_THRESHOLD,
+                                       pixels_threshold=self._min_area,
+                                       merge=True)
 
             if not blobs:
                 return spot
@@ -219,22 +249,28 @@ class LaserDetector:
              color_found: tuple = (0, 255, 0),
              color_not: tuple = (255, 0, 0)):
         """
-        绘制光斑检测结果
+        绘制光斑检测结果，始终画绿色边界框。
         """
-        color = color_found if spot.found else color_not
+        GREEN = (0, 255, 0)
+        RED = (255, 0, 0)
 
         if spot.found:
             cx, cy = int(spot.cx), int(spot.cy)
-            # 十字准心
-            img.draw_cross(cx, cy, color=color, size=20, thickness=2)
-            # 半径圆
-            r = int(spot.radius)
-            img.draw_circle(cx, cy, r, color=color, thickness=1)
-            # 信息文字
-            info = f"L({cx},{cy}) r={spot.radius:.1f}"
-            img.draw_string(cx + 15, cy - 8, info, color=color, scale=1)
+            r = int(max(spot.radius, 3))   # 最小半径 3px
+
+            # 1. 绿色矩形边界框
+            img.draw_rectangle(cx - r, cy - r, r * 2, r * 2,
+                               color=GREEN, thickness=2)
+            # 2. 十字准心
+            img.draw_cross(cx, cy, color=GREEN, size=max(r + 4, 12), thickness=2)
+            # 3. 半径圆
+            img.draw_circle(cx, cy, r, color=GREEN, thickness=1)
+            # 4. 质心小点
+            img.draw_circle(cx, cy, 2, color=GREEN, thickness=-1, fill=True)
+            # 5. 信息文字
+            info = "L({},{}) r={:.1f} A={}".format(cx, cy, spot.radius, spot.area)
+            img.draw_string(cx + r + 4, cy - 8, info, color=GREEN, scale=1)
 
         else:
-            # 未检测到：显示状态
-            img.draw_string(10, 10, "Laser: NOT FOUND", color=color, scale=1)
+            img.draw_string(10, 10, "Laser: NOT FOUND", color=RED, scale=1)
 

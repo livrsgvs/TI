@@ -4,14 +4,18 @@
 全国大学生电子设计竞赛 —— CanMV K230 视觉处理与执行控制主程序。
 
 功能：
-  1. 初始化摄像头、串口、PWM 等外设
-  2. 进入主循环：获取图像 → 视觉处理 → 串口发送结果
+  1. 初始化摄像头、串口、激光、PWM 等外设
+  2. 进入主循环：获取图像 → 视觉处理 → PID → 串口发命令 / 收状态
   3. 实时计算并打印帧率（FPS）
   4. 提供异常捕获和资源释放
 
+通信协议 (v2.0)：
+  CommandPacket (K230 → MCU): 12B, HEADER + cmd + x + y + data + flags + param + chk
+  StatusPacket  (MCU → K230): 12B, command=0x10, 速度/距离/电压/状态/错误码
+
 作者：E-Competition Team
-日期：2026-07-09
-版本：v1.0
+日期：2026-07-12
+版本：v2.0 — 双包协议 + 激光驱动
 
 使用方法：
   将本文件及所有依赖模块复制到 K230 的 /sd/ 或内置 Flash，
@@ -22,12 +26,18 @@ import time
 import gc
 import math
 from machine import UART, PWM, Pin
-from media.display import *   # 显示输出（IDE预览）
-from media.sensor import Sensor  # 摄像头像素格式常量
-import debug_config                # 全局调试开关
+from media.display import *          # 显示输出（IDE预览）
+from media.sensor import Sensor     # 摄像头像素格式常量
+import debug_config                   # 全局调试开关
 
 # ---- 导入各功能模块 ----
-from uart_com        import UARTManager, DataPacket
+from uart_com        import (UARTManager, CommandPacket, StatusPacket)
+from uart_com        import (CMD_STOP, CMD_FORWARD, CMD_BACKWARD,
+                             CMD_TURN_LEFT, CMD_TURN_RIGHT,
+                             CMD_STEER, CMD_SERVO, CMD_EMERGENCY,
+                             FLAG_ARRIVED, FLAG_RUNNING, FLAG_ERROR)
+from uart_com        import (make_stop_command, make_steer_command,
+                             make_servo_command)
 from camera          import Camera
 from color_detection import ColorDetector, COLOR_THRESHOLDS
 from shape_detection import ShapeDetector, ShapeType
@@ -39,25 +49,10 @@ from tracking        import Tracker, TrackState
 from line_follow     import LineFollower
 from coordinate_mapping import CoordinateMapper
 from laser_detection import LaserDetector
+from laser           import Laser
 from motor           import MotorController
 from servo           import ServoController
 from pid_controller  import PIDController, PID_PRESETS
-
-# ---- 命令码常量（K230→MCU） ----
-CMD_STOP      = 0x00   # 停车
-CMD_FORWARD   = 0x01   # 前进
-CMD_BACKWARD  = 0x02   # 后退
-CMD_TURN_LEFT = 0x03   # 左转
-CMD_TURN_RIGHT= 0x04   # 右转
-CMD_STEER     = 0x05   # PID转向（target_x=转向量）
-CMD_LASER_SERVO = 0x06  # 激光跟踪舵机（target_x=pan, target_y=tilt）
-CMD_EMERGENCY = 0xFF   # 急停
-
-# ---- 控制模式 ----
-MODE_LINE_FOLLOW = "line_follow"
-MODE_LASER_TRACK = "laser_track"
-MODE_COLOR_TRACK = "color_track"
-CONTROL_MODE = MODE_LINE_FOLLOW   # ← 切换控制模式只需改这里！
 
 
 # ============================================================
@@ -81,23 +76,27 @@ class Config:
     UART_RX_PIN = 6          # UART2_RXD = IO6 (物理Pin20)
 
     # ---- 功能开关（按需开启/关闭以节省算力） ----
-    ENABLE_COLOR_DETECTION  = False #颜色识别
-    ENABLE_SHAPE_DETECTION  = False#形状识别
-    ENABLE_BARCODE          = False#条码识别
-    ENABLE_QRCODE           = False#二维码识别
-    ENABLE_OCR              = False#光学字符识别
-    ENABLE_OBJECT_DETECTION = False#目标检测
-    ENABLE_TRACKING         = False#目标跟踪
-    ENABLE_LINE_FOLLOW      = True#循线行驶
-    ENABLE_LASER_DETECTION  = False#激光检测
+    ENABLE_COLOR_DETECTION  = False  # 颜色识别
+    ENABLE_SHAPE_DETECTION  = True   # 形状识别（激光跟随矩形中心）
+    ENABLE_BARCODE          = False  # 条码识别
+    ENABLE_QRCODE           = False  # 二维码识别
+    ENABLE_OCR              = False  # OCR
+    ENABLE_OBJECT_DETECTION = False  # 目标检测
+    ENABLE_TRACKING         = False  # 目标跟踪
+    ENABLE_LINE_FOLLOW      = False   # 循线行驶
+    ENABLE_LASER_DETECTION  = True   # 激光检测
+
+    # ---- 激光头 ----
+    LASER_ENABLE = True         # 是否启用激光头
+    LASER_PIN    = 20            # GPIO 引脚（IO20 = 物理Pin5）
 
     # ---- 调试 ----
-    DEBUG_MODE = True           # 开启后在图像上绘制中间结果
-    FPS_INTERVAL = 1.0          # FPS 打印间隔（秒）
+    DEBUG_MODE = True            # 开启后在图像上绘制中间结果 + print
+    FPS_INTERVAL = 1.0           # FPS 打印间隔（秒）
 
-    # ---- 电机 / 舵机 ----#接了几个对应的设备
-    MOTOR_COUNT = 0
-    SERVO_COUNT = 0
+    # ---- 电机 / 舵机 ----
+    MOTOR_COUNT = 0              # 本地电机数（0=由下位机控制）
+    SERVO_COUNT = 0              # 本地舵机数（0=由下位机控制）
 
     # ---- 默认检测目标 ----
     DEFAULT_COLOR_TARGET = "red"
@@ -128,19 +127,21 @@ class Config:
     BASE_SPEED = 40              # 小车基础速度（%）
 
 
+# ---- 控制模式 ----
+MODE_LINE_FOLLOW = "line_follow"
+MODE_LASER_TRACK = "laser_track"
+MODE_COLOR_TRACK = "color_track"
+CONTROL_MODE = MODE_LASER_TRACK   # ← 切换控制模式只需改这里！
+
+
 # ============================================================
 # 系统初始化
 # ============================================================
 def init_all():
     """
     初始化所有外设和模块
-    :return: (camera, uart, detectors_dict, actuators_dict)
+    :return: (camera, uart, detectors_dict, actuators_dict, laser)
     """
-    # print("=" * 40)
-    # print("  全国大学生电子设计竞赛 - K230 视觉框架")
-    # print("  Version 1.0")
-    # print("=" * 40)
-
     # 1. 显示器（必须在 sensor.run() 之前初始化！）
     if Config.DEBUG_MODE:
         try:
@@ -161,6 +162,10 @@ def init_all():
         print("[错误] 摄像头初始化失败，请检查连接！")
         raise RuntimeError("Camera init failed")
 
+    # 注：K230 v3p0 固件不支持 set_auto_whitebal / set_brightness 等，
+    #     也不支持 set_auto_exposure 手动模式（会导致 snapshot 通道报错），
+    #     画质优化需在摄像头物理调焦和光线环境上解决。
+
     # 3. 串口
     if Config.DEBUG_MODE:
         print("[Init] 初始化串口...")
@@ -169,7 +174,17 @@ def init_all():
     if not uart.init():
         print("[警告] 串口初始化失败，将跳过串口通信")
 
-    # 4. 视觉检测器（按需初始化）
+    # 4. 激光头
+    laser = None
+    if Config.LASER_ENABLE:
+        try:
+            laser = Laser(pin=Config.LASER_PIN)
+            if Config.DEBUG_MODE:
+                print(f"[Init] 激光头初始化成功 (IO{Config.LASER_PIN})")
+        except Exception as e:
+            print(f"[Init] 激光头初始化失败: {e}")
+
+    # 5. 视觉检测器（按需初始化）
     detectors = {}
 
     if Config.ENABLE_COLOR_DETECTION:
@@ -197,12 +212,12 @@ def init_all():
         detectors['line'] = LineFollower(line_color="black", debug=Config.DEBUG_MODE)
 
     if Config.ENABLE_LASER_DETECTION:
-        detectors['laser'] = LaserDetector(strategy="brightness", debug=Config.DEBUG_MODE)
+        detectors['laser'] = LaserDetector(strategy="color", debug=Config.DEBUG_MODE)
 
     # 坐标映射器（独立初始化，需预先标定）
     mapper = CoordinateMapper(mode="linear")
 
-    # 5. 执行器
+    # 6. 执行器（本地 — 通常 MOTOR_COUNT/SERVO_COUNT = 0）
     actuators = {}
     if Config.MOTOR_COUNT > 0:
         motors = MotorController(num_motors=Config.MOTOR_COUNT)
@@ -218,7 +233,7 @@ def init_all():
 
     if Config.DEBUG_MODE:
         print("[Init] 所有模块初始化完成！\n")
-    return cam, uart, detectors, mapper, actuators
+    return cam, uart, detectors, mapper, actuators, laser
 
 
 # ============================================================
@@ -226,15 +241,16 @@ def init_all():
 # ============================================================
 def process_vision(img, detectors: dict, mapper: CoordinateMapper):
     """
-    执行所有已启用的视觉检测任务
+    执行所有已启用的视觉检测任务。
+    检测结果填入 CommandPacket（后续由 process_control 设定 command）。
 
     :param img:        图像帧
     :param detectors:  检测器字典
     :param mapper:     坐标映射器
-    :return:           (DataPacket, vis_results)
+    :return:           (CommandPacket, vis_results)
                        vis_results = {"line": LineResult|None, "laser": LaserSpot|None, ...}
     """
-    packet = DataPacket()
+    cmd = CommandPacket()          # 新建命令包
     vis_results = {"line": None, "laser": None}
 
     # --- 颜色检测 ---
@@ -243,13 +259,11 @@ def process_vision(img, detectors: dict, mapper: CoordinateMapper):
                                           color_name=Config.DEFAULT_COLOR_TARGET)
         if blobs:
             largest = blobs[0]
-            # 坐标映射（若已标定）
             wx, wy = mapper.pixel_to_world(largest.cx, largest.cy)
-            packet.target_x = int(wx * 100)   # 放大100倍保留精度
-            packet.target_y = int(wy * 100)
-            packet.target_type = 1
-            packet.flags |= 0x01              # bit0: 检测到目标
-
+            cmd.x = int(wx * 100)       # 放大100倍保留精度
+            cmd.y = int(wy * 100)
+            cmd.data = 1                # target_type = 1（颜色）
+            cmd.flags |= 0x01           # bit0: 检测到目标
             if Config.DEBUG_MODE:
                 detectors['color'].draw_biggest(img, largest)
 
@@ -257,17 +271,18 @@ def process_vision(img, detectors: dict, mapper: CoordinateMapper):
     if 'shape' in detectors:
         shapes = detectors['shape'].detect(img)
         if shapes:
-            # 找最大形状
             best = max(shapes, key=lambda s: s.area)
             if best.shape_type == ShapeType.CIRCLE:
-                packet.target_type = 2   # 圆形
+                cmd.data = 2
+                vis_results['rect_center'] = (best.centroid[0], best.centroid[1])
             elif best.shape_type == ShapeType.RECTANGLE:
-                packet.target_type = 3   # 矩形
+                cmd.data = 3
+                vis_results['rect_center'] = (best.centroid[0], best.centroid[1])
             elif best.shape_type == ShapeType.TRIANGLE:
-                packet.target_type = 4   # 三角形
+                cmd.data = 4
+                vis_results['rect_center'] = (best.centroid[0], best.centroid[1])
             else:
-                packet.target_type = 5   # 其他
-
+                cmd.data = 5
             if Config.DEBUG_MODE:
                 detectors['shape'].draw_shapes(img, shapes)
 
@@ -275,7 +290,7 @@ def process_vision(img, detectors: dict, mapper: CoordinateMapper):
     if 'barcode' in detectors:
         results = detectors['barcode'].detect(img)
         if results:
-            packet.target_type = 6
+            cmd.data = 6
             if Config.DEBUG_MODE:
                 detectors['barcode'].draw_results(img, results)
 
@@ -283,7 +298,7 @@ def process_vision(img, detectors: dict, mapper: CoordinateMapper):
     if 'qrcode' in detectors:
         results = detectors['qrcode'].detect(img)
         if results:
-            packet.target_type = 7
+            cmd.data = 7
             if Config.DEBUG_MODE:
                 detectors['qrcode'].draw_results(img, results)
 
@@ -293,9 +308,9 @@ def process_vision(img, detectors: dict, mapper: CoordinateMapper):
         if boxes:
             best = detectors['object'].get_largest(boxes)
             if best:
-                packet.target_x = best.centroid[0]
-                packet.target_y = best.centroid[1]
-                packet.target_type = 8 + best.class_id
+                cmd.x = best.centroid[0]
+                cmd.y = best.centroid[1]
+                cmd.data = 8 + best.class_id
             if Config.DEBUG_MODE:
                 detectors['object'].draw_boxes(img, boxes)
 
@@ -304,10 +319,9 @@ def process_vision(img, detectors: dict, mapper: CoordinateMapper):
         line_result = detectors['line'].detect(img)
         vis_results['line'] = line_result
         if line_result.found:
-            packet.target_x = int(line_result.offset * 100)
-            packet.target_y = int(line_result.angle * 100)
-            packet.flags |= 0x04   # bit2: 线检测到
-        # 始终画调试信息（含未检测到时的 ROI + "NO LINE"）
+            cmd.x = int(line_result.offset * 100)       # x = 偏移 ×100
+            cmd.y = int(line_result.angle * 100)        # y = 角度 ×100
+            cmd.flags |= 0x04                           # bit2: 线检测到
         if Config.DEBUG_MODE:
             detectors['line'].draw(img, line_result)
 
@@ -316,42 +330,46 @@ def process_vision(img, detectors: dict, mapper: CoordinateMapper):
         spot = detectors['laser'].detect(img)
         vis_results['laser'] = spot
         if spot.found:
-            packet.target_x = int(spot.cx * 100)
-            packet.target_y = int(spot.cy * 100)
-            packet.target_type = 20
-            packet.flags |= 0x01
+            cmd.x = int(spot.cx * 100)
+            cmd.y = int(spot.cy * 100)
+            cmd.data = 20
+            cmd.flags |= 0x01
         if Config.DEBUG_MODE:
             detectors['laser'].draw(img, spot)
 
-    return packet, vis_results
+    return cmd, vis_results
 
 
 # ============================================================
 # PID 控制处理
 # ============================================================
-def process_control(packet, vis_results, pid_ctrls, line_lost, laser_lost):
+def process_control(cmd: CommandPacket, vis_results, pid_ctrls,
+                    line_lost, laser_lost) -> CommandPacket:
     """
-    根据视觉检测结果运行 PID 控制，修改 packet 中的 command/target 字段。
+    根据视觉检测结果运行 PID，将最终指令填入 CommandPacket。
 
-    :param packet:      DataPacket（已由 process_vision 填充检测数据）
-    :param vis_results: 视觉检测原始结果 {"line": LineResult, "laser": LaserSpot}
+    :param cmd:         CommandPacket（已由 process_vision 填充检测数据）
+    :param vis_results: 视觉检测原始结果
     :param pid_ctrls:   PID 控制器字典
-    :param line_lost:   丢线标志（单元素列表，用于跨帧保持状态）
+    :param line_lost:   丢线标志（list，跨帧可变）
     :param laser_lost:  丢激光标志
+    :return:            修改后的 CommandPacket
     """
     # --- 循线 PID ---
     if CONTROL_MODE == MODE_LINE_FOLLOW and 'line_pid' in pid_ctrls:
         line_result = vis_results.get('line')
 
         if line_result is not None and line_result.found:
-            if line_lost[0]:  # 刚从丢线恢复，重置 PID
+            if line_lost[0]:
                 pid_ctrls['line_pid'].reset()
                 line_lost[0] = False
 
             turn = pid_ctrls['line_pid'].compute(line_result.offset)
-            packet.command = CMD_STEER
-            packet.target_x = int(turn)
-            packet.target_y = Config.BASE_SPEED
+            # 用工厂函数构建 STEER 命令（x=转向, y=速度）
+            cmd.command = CMD_STEER
+            cmd.x = int(turn)           # 转向量 -100~100，x>0 期望右转
+            cmd.y = Config.BASE_SPEED   # 基准速度
+            cmd.flags |= 0x04
 
             if Config.DEBUG_MODE:
                 print("[PID-Line] err={:.1f} turn={:.0f}".format(
@@ -362,13 +380,19 @@ def process_control(packet, vis_results, pid_ctrls, line_lost, laser_lost):
                     print("[PID-Line] 丢线 → 停车 + 重置PID")
                 line_lost[0] = True
             pid_ctrls['line_pid'].reset()
-            packet.command = CMD_STOP
-            packet.target_x = 0
-            packet.target_y = 0
+            cmd.command = CMD_STOP
+            cmd.x = 0
+            cmd.y = 0
 
-    # --- 激光跟踪 PID ---
+    # --- 激光跟踪 PID（目标 = 检测到的矩形中心） ---
     elif CONTROL_MODE == MODE_LASER_TRACK and 'laser_pan_pid' in pid_ctrls:
         spot = vis_results.get('laser')
+        rect_center = vis_results.get('rect_center')
+
+        # 每帧动态更新 PID setpoint 为矩形中心
+        if rect_center is not None:
+            pid_ctrls['laser_pan_pid'].set_setpoint(rect_center[0])
+            pid_ctrls['laser_tilt_pid'].set_setpoint(rect_center[1])
 
         if spot is not None and spot.found:
             if laser_lost[0]:
@@ -376,81 +400,61 @@ def process_control(packet, vis_results, pid_ctrls, line_lost, laser_lost):
                 pid_ctrls['laser_tilt_pid'].reset()
                 laser_lost[0] = False
 
-            # 以图像中心 (160, 120) 为 setpoint
             pan = pid_ctrls['laser_pan_pid'].compute(spot.cx)
             tilt = pid_ctrls['laser_tilt_pid'].compute(spot.cy)
 
-            packet.command = CMD_LASER_SERVO
-            packet.target_x = int(pan)
-            packet.target_y = int(tilt)
+            cmd.command = CMD_SERVO
+            cmd.x = int(pan)            # 舵机 pan 角度水平
+            cmd.y = int(tilt)           # 舵机 tilt 角度竖直
 
             if Config.DEBUG_MODE:
-                print("[PID-Laser] cx={:.1f} cy={:.1f} → pan={:.0f} tilt={:.0f}".format(
-                    spot.cx, spot.cy, pan, tilt))
+                sp_x = pid_ctrls['laser_pan_pid'].setpoint
+                sp_y = pid_ctrls['laser_tilt_pid'].setpoint
+                print("[PID-Laser] spot=({:.0f},{:.0f}) tgt=({:.0f},{:.0f}) "
+                      "err=({:.1f},{:.1f}) → pan={:.0f} tilt={:.0f}".format(
+                          spot.cx, spot.cy, sp_x, sp_y,
+                          pid_ctrls['laser_pan_pid'].error,
+                          pid_ctrls['laser_tilt_pid'].error,
+                          pan, tilt))
         else:
             if not laser_lost[0]:
                 if Config.DEBUG_MODE:
-                    print("[PID-Laser] 丢失目标 → 重置PID")
+                    print("[PID-Laser] 丢失光斑 → 重置PID")
                 laser_lost[0] = True
             pid_ctrls['laser_pan_pid'].reset()
             pid_ctrls['laser_tilt_pid'].reset()
-            packet.command = CMD_STOP
-            packet.target_x = 0
-            packet.target_y = 0
+            cmd.command = CMD_STOP
+            cmd.x = 0
+            cmd.y = 0
 
-    return packet
+    return cmd
 
 
 # ============================================================
-# 指令处理（接收下位机命令）
+# 下位机状态处理
 # ============================================================
-def process_command(packet: DataPacket, actuators: dict):
+def process_status(pkt: StatusPacket, actuators: dict):
     """
-    处理从下位机接收的命令
-    :param packet:    接收到的 DataPacket
-    :param actuators: 执行器字典 {"motors": ..., "servos": ...}
+    处理从下位机收到的状态包（command=0x10）。
+    在调试模式下打印状态信息。
     """
-    if packet is None:
+    if pkt is None:
         return
 
-    cmd = packet.command
+    if Config.DEBUG_MODE:
+        print("[Status] spd={:.1f}cm/s dist={:.1f}cm v={:.2f}V "
+              "arr={} run={} err={}".format(
+                  pkt.speed_cms, pkt.distance_cm, pkt.voltage_v,
+                  pkt.is_arrived, pkt.is_running, pkt.has_error))
+        if pkt.has_error:
+            print("[Status] ⚠ 下位机报错 code={}".format(pkt.error_code))
 
-    # 电机命令
-    if 'motors' in actuators:
-        mc = actuators['motors']
-        if cmd == CMD_FORWARD:
-            mc.set_all_throttle(Config.BASE_SPEED)
-        elif cmd == CMD_BACKWARD:
-            mc.set_all_throttle(-Config.BASE_SPEED)
-        elif cmd == CMD_TURN_LEFT:
-            mc.set_motor(1, 30)
-            mc.set_motor(2, 60)
-        elif cmd == CMD_TURN_RIGHT:
-            mc.set_motor(1, 60)
-            mc.set_motor(2, 30)
-        elif cmd == CMD_STEER:
-            # MCU 发来的差速转向: target_x=转向, target_y=速度
-            turn = packet.target_x
-            speed = packet.target_y if packet.target_y != 0 else Config.BASE_SPEED
-            left = speed - turn / 2
-            right = speed + turn / 2
-            mc.set_motor(1, max(0, min(100, right)))
-            mc.set_motor(2, max(0, min(100, left)))
-        elif cmd == CMD_STOP:
-            mc.stop_all()
-        elif cmd == CMD_EMERGENCY:
-            mc.emergency_stop_all()
-
-    # 舵机命令
-    if 'servos' in actuators:
-        sc = actuators['servos']
-        if cmd == CMD_LASER_SERVO:
-            # 激光跟踪云台: target_x=pan角度, target_y=tilt角度
-            sc.set_angle(1, packet.target_x)
-            sc.set_angle(2, packet.target_y)
-        elif 0x10 <= cmd <= 0x1F:
-            angle = packet.target_x
-            sc.set_angle(1, angle)
+    # 若下位机报错 → 本地执行器也急停
+    if pkt.has_error and 'motors' in actuators:
+        try:
+            actuators['motors'].emergency_stop_all()
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -464,17 +468,23 @@ def main():
     uart = None
     actuators = {}
     detectors = {}
+    laser = None
 
     try:
         # ---- 设置全局调试开关 ----
         debug_config.DEBUG = Config.DEBUG_MODE
 
         # ---- 初始化 ----
-        cam, uart, detectors, mapper, actuators = init_all()
+        cam, uart, detectors, mapper, actuators, laser = init_all()
+
+        # ---- 注册串口接收回调 ----
+        if uart is not None and uart.is_ready:
+            uart.register_rx_callback(
+                lambda pkt: process_status(pkt, actuators))
 
         # ---- PID 控制器初始化 ----
         pid_ctrls = {}
-        line_lost = [True]    # 用 list 实现跨帧可变引用
+        line_lost = [True]
         laser_lost = [True]
 
         if Config.ENABLE_PID:
@@ -489,13 +499,12 @@ def main():
                         Config.LINE_KP, Config.LINE_KI, Config.LINE_KD))
 
             elif CONTROL_MODE == MODE_LASER_TRACK and Config.ENABLE_LASER_DETECTION:
-                # 水平 Pan：setpoint = CAM_WIDTH/2
+                # 默认 setpoint=画面中心，运行时每帧被矩形中心覆盖
                 pid_ctrls['laser_pan_pid'] = PIDController(
                     kp=Config.LASER_PAN_KP, ki=Config.LASER_PAN_KI, kd=Config.LASER_PAN_KD,
                     setpoint=Config.CAM_WIDTH / 2,
                     output_limit=Config.LASER_OUTPUT_LIMIT,
                     integral_limit=(-20, 20), name="laser_pan")
-                # 垂直 Tilt：setpoint = CAM_HEIGHT/2
                 pid_ctrls['laser_tilt_pid'] = PIDController(
                     kp=Config.LASER_TILT_KP, ki=Config.LASER_TILT_KI, kd=Config.LASER_TILT_KD,
                     setpoint=Config.CAM_HEIGHT / 2,
@@ -523,41 +532,36 @@ def main():
                 print("[警告] 获取帧失败")
                 continue
 
-            # 2. 视觉处理 → packet + 原始检测结果
-            packet, vis_results = process_vision(img, detectors, mapper)
+            # 2. 视觉处理 → CommandPacket（检测数据） + vis_results
+            cmd, vis_results = process_vision(img, detectors, mapper)
 
-            # 3. PID 控制 → 修改 packet 的 command/target
+            # 3. PID 控制 → 设定最终 command/x/y
             if Config.ENABLE_PID:
-                packet = process_control(packet, vis_results, pid_ctrls,
-                                         line_lost, laser_lost)
+                cmd = process_control(cmd, vis_results, pid_ctrls,
+                                      line_lost, laser_lost)
 
-            # 4. IDE显示预览
+            # 4. IDE 显示预览
             if Config.DEBUG_MODE:
                 try:
                     Display.show_image(img)
                 except Exception:
                     pass
 
-            # 5. 串口收发
-            if uart is not None:
-                rx_packet = uart.receive()
-                if rx_packet is not None:
-                    process_command(rx_packet, actuators)
+            # 5. 串口通信 — 发命令包 + 收状态包
+            if uart is not None and uart.is_ready:
+                uart.send_command(cmd)           # 发送 12B 命令包
+                uart.process_rx()                # 处理接收（触发回调）
 
-                uart.send(packet)
-
-            # 5. 帧率计算
+            # 6. 帧率计算
             frame_count += 1
             t_now = time.ticks_ms()
 
-            # 每隔 FPS_INTERVAL 秒打印一次
             if time.ticks_diff(t_now, t_last_fps_print) >= Config.FPS_INTERVAL * 1000:
                 elapsed = time.ticks_diff(t_now, t_last_fps_print) / 1000.0
                 fps = frame_count / elapsed
                 if Config.DEBUG_MODE:
                     print(f"FPS: {fps:.1f}")
 
-                # 也打印帧耗时
                 frame_time = time.ticks_diff(t_now, t_frame_start)
                 if Config.DEBUG_MODE:
                     print(f"  Frame time: {frame_time}ms, Free mem: {gc.mem_free()}")
@@ -565,7 +569,7 @@ def main():
                 frame_count = 0
                 t_last_fps_print = t_now
 
-            # 6. 垃圾回收（周期性，防止内存碎片）
+            # 7. 垃圾回收（周期性，防止内存碎片）
             if frame_count % 50 == 0:
                 gc.collect()
 
@@ -581,6 +585,10 @@ def main():
         # ---- 资源释放 ----
         if Config.DEBUG_MODE:
             print("[Main] 正在释放资源...")
+
+        if laser is not None:
+            laser.off()
+            laser.deinit()
 
         if cam is not None:
             cam.deinit()

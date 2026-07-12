@@ -155,7 +155,7 @@ class Camera:
         """
         try:
             self._sensor.set_auto_exposure(enable, exposure_us=exposure_us)
-        except AttributeError:
+        except Exception:
             pass  # 固件不支持则忽略
 
     def set_auto_whitebal(self, enable: bool,
@@ -167,28 +167,28 @@ class Camera:
         """
         try:
             self._sensor.set_auto_whitebal(enable, r_gain=r_gain, g_gain=g_gain, b_gain=b_gain)
-        except AttributeError:
-            pass
+        except Exception:
+            pass  # 固件不支持则忽略
 
     def set_brightness(self, value: int):
         """设置亮度"""
         try:
             self._sensor.set_brightness(value)
-        except AttributeError:
+        except Exception:
             pass
 
     def set_contrast(self, value: int):
         """设置对比度"""
         try:
             self._sensor.set_contrast(value)
-        except AttributeError:
+        except Exception:
             pass
 
     def set_saturation(self, value: int):
         """设置饱和度"""
         try:
             self._sensor.set_saturation(value)
-        except AttributeError:
+        except Exception:
             pass
 
     # ---- 镜像 / 翻转 ----
@@ -198,7 +198,7 @@ class Camera:
         try:
             self._sensor.set_vflip(enable)
             self._flip = enable
-        except AttributeError:
+        except Exception:
             pass
 
     def set_hmirror(self, enable: bool):
@@ -206,7 +206,7 @@ class Camera:
         try:
             self._sensor.set_hmirror(enable)
             self._mirror = enable
-        except AttributeError:
+        except Exception:
             pass
 
     # ---- 属性 ----

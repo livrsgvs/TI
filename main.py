@@ -77,17 +77,17 @@ class Config:
 
     # ---- 功能开关（按需开启/关闭以节省算力） ----
     ENABLE_COLOR_DETECTION  = False  # 颜色识别
-    ENABLE_SHAPE_DETECTION  = True   # 形状识别（激光跟随矩形中心）
+    ENABLE_SHAPE_DETECTION  = False   # 形状识别（激光跟随矩形中心）
     ENABLE_BARCODE          = False  # 条码识别
     ENABLE_QRCODE           = False  # 二维码识别
     ENABLE_OCR              = False  # OCR
     ENABLE_OBJECT_DETECTION = False  # 目标检测
     ENABLE_TRACKING         = False  # 目标跟踪
-    ENABLE_LINE_FOLLOW      = False   # 循线行驶
-    ENABLE_LASER_DETECTION  = True   # 激光检测
+    ENABLE_LINE_FOLLOW      = True   # 循线行驶
+    ENABLE_LASER_DETECTION  = False  # 激光检测
 
     # ---- 激光头 ----
-    LASER_ENABLE = True         # 是否启用激光头
+    LASER_ENABLE = False         # 是否启用激光头
     LASER_PIN    = 20            # GPIO 引脚（IO20 = 物理Pin5）
 
     # ---- 调试 ----
@@ -108,7 +108,7 @@ class Config:
     LINE_KP = 0.80
     LINE_KI = 0.02
     LINE_KD = 0.15
-    LINE_OUTPUT_LIMIT = (-100, 100)
+    LINE_OUTPUT_LIMIT = (-80, 80)
     LINE_INTEGRAL_LIMIT = (-50, 50)
 
     # 激光跟踪 PID 参数（水平 pan）
@@ -367,9 +367,13 @@ def process_control(cmd: CommandPacket, vis_results, pid_ctrls,
             turn = pid_ctrls['line_pid'].compute(line_result.offset)
             # 用工厂函数构建 STEER 命令（x=转向, y=速度）
             cmd.command = CMD_STEER
-            cmd.x = int(turn)           # 转向量 -100~100，x>0 期望右转
-            cmd.y = Config.BASE_SPEED   # 基准速度
-            cmd.flags |= 0x04
+            STEER_ANGLE_MAX = 45   # 最大转向角度（度）
+            steer_angle = int(turn / 100.0 * STEER_ANGLE_MAX)
+            # 限幅，防止超出物理极限
+            steer_angle = max(-STEER_ANGLE_MAX, min(STEER_ANGLE_MAX, steer_angle))
+
+            cmd.x = steer_angle      # 发给下位机的是角度（-45~+45）
+            cmd.y = Config.BASE_SPEED          cmd.flags |= 0x04
 
             if Config.DEBUG_MODE:
                 print("[PID-Line] err={:.1f} turn={:.0f}".format(
